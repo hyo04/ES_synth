@@ -51,14 +51,22 @@ void setOutMuxBit(const uint8_t bitIdx, const bool value) {
 
 
 std::bitset<4> readCols() {
-    std::bitset<4> result;
 
+
+    std::bitset<4> result;
     result[0] = digitalRead(C0_PIN);
     result[1] = digitalRead(C1_PIN);
     result[2] = digitalRead(C2_PIN);
     result[3] = digitalRead(C3_PIN);
-
     return result;
+}
+
+void setRow(uint8_t rowIdx) {
+  digitalWrite(REN_PIN, LOW);                 // disable to avoid glitches
+  digitalWrite(RA0_PIN, rowIdx & 0x01);
+  digitalWrite(RA1_PIN, (rowIdx >> 1) & 0x01);
+  digitalWrite(RA2_PIN, (rowIdx >> 2) & 0x01);
+  digitalWrite(REN_PIN, HIGH);                // enable selected row
 }
 
 void setup() {
@@ -74,10 +82,10 @@ void setup() {
   pinMode(OUTR_PIN, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
 
-  pinMode(C0_PIN, INPUT);
-  pinMode(C1_PIN, INPUT);
-  pinMode(C2_PIN, INPUT);
-  pinMode(C3_PIN, INPUT);
+  pinMode(C0_PIN, INPUT_PULLUP);
+  pinMode(C1_PIN, INPUT_PULLUP);
+  pinMode(C2_PIN, INPUT_PULLUP);
+  pinMode(C3_PIN, INPUT_PULLUP);
   pinMode(JOYX_PIN, INPUT);
   pinMode(JOYY_PIN, INPUT);
 
@@ -93,25 +101,38 @@ void setup() {
   Serial.begin(9600);
   Serial.println("Hello World");
 }
-
 void loop() {
-  // put your main code here, to run repeatedly:
   static uint32_t next = millis();
-  static uint32_t count = 0;
-
-  while (millis() < next);  //Wait for next interval
-
+  while (millis() < next) {}
   next += interval;
 
-  //Update display
-  u8g2.clearBuffer();         // clear the internal memory
-  u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
-  u8g2.drawStr(0,10,"Helllo World!");  // write something to the internal memory
-  u8g2.setCursor(2,20);
-  u8g2.print(count++);
-  u8g2.sendBuffer();          // transfer internal memory to the display
+  // Scan rows 0..2 (12 keys)
+  std::bitset<32> inputs;  // bits 0..11 used for now
 
-  //Toggle LED
+  for (uint8_t row = 0; row < 3; row++) {
+    setRow(row);
+    delayMicroseconds(3);           // REQUIRED: settle time
+
+    std::bitset<4> cols = readCols();
+
+    // Copy C0..C3 into inputs[4*row + 0 .. 4*row + 3]
+    for (uint8_t col = 0; col < 4; col++) {
+      inputs[row * 4 + col] = cols[col];
+    }
+  }
+
+  // Format exactly 12 bits as 3 hex digits
+  uint16_t v12 = (uint16_t)(inputs.to_ulong() & 0x0FFF);
+  char buf[4]; // 3 chars + null
+  snprintf(buf, sizeof(buf), "%03X", v12);
+
+  // Update display
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(0, 10, "Hello World!");
+  u8g2.setCursor(0, 20);
+  u8g2.print(buf);
+  u8g2.sendBuffer();
+
   digitalToggle(LED_BUILTIN);
-  
 }
