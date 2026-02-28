@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
+#include <bitset>
 
 //Constants
   const uint32_t interval = 100; //Display update interval
@@ -46,6 +47,18 @@ void setOutMuxBit(const uint8_t bitIdx, const bool value) {
       digitalWrite(REN_PIN,HIGH);
       delayMicroseconds(2);
       digitalWrite(REN_PIN,LOW);
+}
+
+
+std::bitset<4> readCols() {
+    std::bitset<4> result;
+
+    result[0] = digitalRead(C0_PIN);
+    result[1] = digitalRead(C1_PIN);
+    result[2] = digitalRead(C2_PIN);
+    result[3] = digitalRead(C3_PIN);
+
+    return result;
 }
 
 void setup() {
