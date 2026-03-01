@@ -1,9 +1,13 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <bitset>
+#include <HardwareTimer.h>
+
+HardwareTimer sampleTimer(TIM1);
 
 //Constants
   const uint32_t interval = 100; //Display update interval
+  
 
 //Pin definitions
   //Row select and enable
@@ -34,19 +38,46 @@
   const int HKOW_BIT = 5;
   const int HKOE_BIT = 6;
 
+volatile uint32_t currentStepSize = 0;
+volatile int currentNoteIndex = -1;
+
+const char* noteNames[12] = {
+  "C","C#","D","D#","E","F",
+  "F#","G","G#","A","A#","B"
+};
+
+const uint32_t stepSizes[12] = {
+  51076002,  // C
+  54098238,  // C#
+  57307049,  // D
+  60715768,  // D#
+  64338225,  // E
+  68188717,  // F
+  72282135,  // F#
+  76633902,  // G
+  81260097,  // G#
+  86177490,  // A (440 Hz)
+  91403586,  // A#
+  96956624   // B
+};
+
+
 //Display driver object
 U8G2_SSD1305_128X32_ADAFRUIT_F_HW_I2C u8g2(U8G2_R0);
 
 //Function to set outputs using key matrix
 void setOutMuxBit(const uint8_t bitIdx, const bool value) {
-      digitalWrite(REN_PIN,LOW);
-      digitalWrite(RA0_PIN, bitIdx & 0x01);
-      digitalWrite(RA1_PIN, bitIdx & 0x02);
-      digitalWrite(RA2_PIN, bitIdx & 0x04);
-      digitalWrite(OUT_PIN,value);
-      digitalWrite(REN_PIN,HIGH);
-      delayMicroseconds(2);
-      digitalWrite(REN_PIN,LOW);
+  digitalWrite(REN_PIN, LOW);
+
+  digitalWrite(RA0_PIN, bitIdx & 0x01);
+  digitalWrite(RA1_PIN, (bitIdx >> 1) & 0x01);
+  digitalWrite(RA2_PIN, (bitIdx >> 2) & 0x01);
+
+  digitalWrite(OUT_PIN, value);
+
+  digitalWrite(REN_PIN, HIGH);
+  delayMicroseconds(2);
+  digitalWrite(REN_PIN, LOW);
 }
 
 
@@ -67,6 +98,18 @@ void setRow(uint8_t rowIdx) {
   digitalWrite(RA1_PIN, (rowIdx >> 1) & 0x01);
   digitalWrite(RA2_PIN, (rowIdx >> 2) & 0x01);
   digitalWrite(REN_PIN, HIGH);                // enable selected row
+}
+
+void sampleISR() {
+  static uint32_t phaseAcc = 0;
+
+  phaseAcc += currentStepSize;
+
+  // Convert to 8-bit sawtooth centered at 0
+  int32_t vout = (int32_t)(phaseAcc >> 24) - 128;
+
+  // Add DC offset for 0–255 PWM output
+  analogWrite(OUTL_PIN, (uint8_t)(vout + 128));
 }
 
 void setup() {
@@ -100,38 +143,72 @@ void setup() {
   //Initialise UART
   Serial.begin(9600);
   Serial.println("Hello World");
-}
-void loop() {
+
+  analogWriteResolution(8);
+
+  sampleTimer.setOverflow(22000, HERTZ_FORMAT);
+  sampleTimer.attachInterrupt(sampleISR);
+  sampleTimer.resume();
+};
+
+void loop(){
   static uint32_t next = millis();
   while (millis() < next) {}
   next += interval;
 
   // Scan rows 0..2 (12 keys)
-  std::bitset<32> inputs;  // bits 0..11 used for now
+  std::bitset<32> inputs;
 
   for (uint8_t row = 0; row < 3; row++) {
     setRow(row);
-    delayMicroseconds(3);           // REQUIRED: settle time
+    delayMicroseconds(3);
 
     std::bitset<4> cols = readCols();
-
-    // Copy C0..C3 into inputs[4*row + 0 .. 4*row + 3]
     for (uint8_t col = 0; col < 4; col++) {
       inputs[row * 4 + col] = cols[col];
     }
   }
 
-  // Format exactly 12 bits as 3 hex digits
+  // Choose step size + note (last pressed wins)
+  uint32_t localCurrentStepSize = 0;
+  int newNote = -1;
+
+  for (int i = 0; i < 12; i++) {
+    if (inputs[i] == 0) {                 // active LOW
+      localCurrentStepSize = stepSizes[i];
+      newNote = i;
+    }
+  }
+
+  // Atomic store (single, explicit write)
+  __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+
+  currentNoteIndex = newNote;
+
+  // Show 12-bit key state (3 hex digits)
   uint16_t v12 = (uint16_t)(inputs.to_ulong() & 0x0FFF);
-  char buf[4]; // 3 chars + null
-  snprintf(buf, sizeof(buf), "%03X", v12);
+  char hexbuf[4];
+  snprintf(hexbuf, sizeof(hexbuf), "%03X", v12);
+
+
 
   // Update display
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_ncenB08_tr);
+
   u8g2.drawStr(0, 10, "Hello World!");
+
+  // Hex key state (row 2)
   u8g2.setCursor(0, 20);
-  u8g2.print(buf);
+  u8g2.print(hexbuf);
+
+  // Note name BELOW it (row 3)
+  u8g2.setCursor(0, 30);
+  if (currentNoteIndex >= 0) 
+      u8g2.print(noteNames[currentNoteIndex]);
+  else 
+      u8g2.print("--");
+
   u8g2.sendBuffer();
 
   digitalToggle(LED_BUILTIN);
